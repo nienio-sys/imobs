@@ -3,28 +3,25 @@ from app.models import ChatRequest, ChatResponse
 from app.agent import extrair_filtros
 from app.scraper import buscar_imoveis
 
-app = FastAPI(
-    title="Agente de Imóveis Balneário Camboriú",
-    version="1.0.0"
-)
+app = FastAPI(title="Agente de Imóveis Balneário Camboriú", version="1.0.0")
 
 @app.get("/")
 def health_check():
     return {"status": "ok", "servico": "Agente Imobiliario BC"}
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest):
     try:
         # 1. Extrai filtros com a IA
         filtros = extrair_filtros(request.query)
         
-        # 2. Executa a busca/scraping dos imóveis
-        imoveis = buscar_imoveis(filtros)
+        # 2. Executa a busca assíncrona nos 3 sites
+        imoveis = await buscar_imoveis(filtros)
         
-        # 3. Gera mensagem legível de resposta
+        # 3. Gera resposta
         resumo_agente = (
-            f"Encontrei {len(imoveis)} opção(ões) para o seu perfil "
-            f"em Balneário Camboriú."
+            f"Encontrei {len(imoveis)} opção(ões) nos 3 portais consultados "
+            f"para a sua busca em Balneário Camboriú."
         )
         
         return ChatResponse(

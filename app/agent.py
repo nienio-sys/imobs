@@ -3,8 +3,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.config import GROQ_API_KEY
 from app.models import ImovelFiltros
 
+# Modelo utilizado no projeto anterior via Groq
 llm = ChatGroq(
-    model_name="llama-3.3-70b-versatile",
+    model_name="openai/gpt-oss-20b",
     groq_api_key=GROQ_API_KEY,
     temperature=0
 )

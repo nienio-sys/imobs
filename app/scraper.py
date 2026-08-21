@@ -2,99 +2,175 @@ import asyncio
 import httpx
 from bs4 import BeautifulSoup
 from typing import List
+from urllib.parse import quote
 from app.config import SCRAPERAPI_KEY
 from app.models import ImovelFiltros, ImovelResult
 
-# Base da URL da ScraperAPI
 SCRAPER_URL = "http://api.scraperapi.com"
 
-# --- Raspador Site 1 (Ex: Portal Local A) ---
-async def raspar_site_1(client: httpx.AsyncClient, filtros: ImovelFiltros) -> List[ImovelResult]:
+# --- Mapeamento simples de Bairros para URL do ZAP/VivaReal ---
+def tratar_bairro_slug(bairro: str) -> str:
+    if not bairro:
+        return ""
+    b = bairro.lower().strip()
+    if "barra sul" in b:
+        return "barra-sul"
+    if "centro" in b:
+        return "centro"
+    if "pioneiros" in b:
+        return "pioneiros"
+    if "praia dos amores" in b:
+        return "praia-dos-amores"
+    if "naçoes" in b or "nacoes" in b:
+        return "nacoes"
+    return quote(b.replace(" ", "-"))
+
+
+# --- 1. RASPADOR ZAP IMÓVEIS ---
+async def raspar_zap_imoveis(client: httpx.AsyncClient, filtros: ImovelFiltros) -> List[ImovelResult]:
     imoveis = []
-    # Altere para a URL real do Site 1 com os parâmetros de filtro
-    url_alvo = f"https://www.exemplo-imobiliaria-bc-1.com.br/imoveis?bairro={filtros.bairro or ''}&preco_max={filtros.preco_max or ''}"
+    slug_bairro = tratar_bairro_slug(filtros.bairro)
     
+    # URL base do ZAP
+    if slug_bairro:
+        url_alvo = f"https://www.zapimoveis.com.br/venda/imoveis/sc+balneario-camboriu++{slug_bairro}/"
+    else:
+        url_alvo = "https://www.zapimoveis.com.br/venda/imoveis/sc+balneario-camboriu/"
+
     payload = {
         'api_key': SCRAPERAPI_KEY,
         'url': url_alvo,
-        'render': 'true'  # Ative se o site usar JavaScript/React
+        'render': 'true'  # Necessário para ZAP Imóveis (React/Next.js)
     }
-    
+
     try:
-        response = await client.get(SCRAPER_URL, params=payload, timeout=30.0)
+        response = await client.get(SCRAPER_URL, params=payload, timeout=35.0)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            # Lógica de extração do HTML do Site 1
-            # Exemplo de extração mockada até mapear o HTML real:
-            imoveis.append(ImovelResult(
-                titulo="Apê Vista Mar - Fonte: Site 1",
-                bairro=filtros.bairro or "Barra Sul",
-                preco=filtros.preco_max or 3500000.0,
-                suites=filtros.suites_min or 3,
-                vagas=filtros.vagas_min or 2,
-                link="https://www.exemplo-imobiliaria-bc-1.com.br/imovel-1"
-            ))
+            # Cartões de imóvel do ZAP
+            cards = soup.select('.card-container') or soup.select('[data-type="property"]')
+            
+            for card in cards[:5]:  # Pega os 5 primeiros
+                titulo_el = card.select_one('.card__title') or card.select_one('[data-testid="property-card-title"]')
+                preco_el = card.select_one('.simple-card__price') or card.select_one('[data-testid="property-card-price"]')
+                link_el = card.select_one('a')
+
+                if titulo_el and link_el:
+                    link = link_el.get('href', '')
+                    if link and not link.startswith('http'):
+                        link = f"https://www.zapimoveis.com.br{link}"
+
+                    imoveis.append(ImovelResult(
+                        titulo=titulo_el.get_text(strip=True) + " (ZAP Imóveis)",
+                        bairro=filtros.bairro or "Balneário Camboriú",
+                        preco=filtros.preco_max or 0.0,
+                        suites=filtros.suites_min or 0,
+                        vagas=filtros.vagas_min or 0,
+                        link=link
+                    ))
     except Exception as e:
-        print(f"Erro ao raspar Site 1: {e}")
-        
+        print(f"Erro no ZAP Imóveis: {e}")
+
     return imoveis
 
-# --- Raspador Site 2 (Ex: Portal Local B) ---
-async def raspar_site_2(client: httpx.AsyncClient, filtros: ImovelFiltros) -> List[ImovelResult]:
+
+# --- 2. RASPADOR VIVAREAL ---
+async def raspar_vivareal(client: httpx.AsyncClient, filtros: ImovelFiltros) -> List[ImovelResult]:
     imoveis = []
-    url_alvo = "https://www.exemplo-imobiliaria-bc-2.com.br/busca"
-    payload = {'api_key': SCRAPERAPI_KEY, 'url': url_alvo}
-    
+    slug_bairro = tratar_bairro_slug(filtros.bairro)
+
+    if slug_bairro:
+        url_alvo = f"https://www.vivareal.com.br/venda/santa-catarina/balneario-camboriu/bairros/{slug_bairro}/"
+    else:
+        url_alvo = "https://www.vivareal.com.br/venda/santa-catarina/balneario-camboriu/"
+
+    payload = {
+        'api_key': SCRAPERAPI_KEY,
+        'url': url_alvo,
+        'render': 'true'
+    }
+
     try:
-        response = await client.get(SCRAPER_URL, params=payload, timeout=30.0)
+        response = await client.get(SCRAPER_URL, params=payload, timeout=35.0)
         if response.status_code == 200:
-            # Lógica de extração do HTML do Site 2
-            imoveis.append(ImovelResult(
-                titulo="Cobertura Quadra do Mar - Fonte: Site 2",
-                bairro=filtros.bairro or "Centro",
-                preco=filtros.preco_max or 5000000.0,
-                suites=filtros.suites_min or 4,
-                vagas=filtros.vagas_min or 3,
-                link="https://www.exemplo-imobiliaria-bc-2.com.br/imovel-2"
-            ))
+            soup = BeautifulSoup(response.text, 'html.parser')
+            cards = soup.select('.property-card__container')
+
+            for card in cards[:5]:
+                titulo_el = card.select_one('.property-card__title')
+                link_el = card.select_one('a.property-card__content-link')
+
+                if titulo_el and link_el:
+                    link = link_el.get('href', '')
+                    if link and not link.startswith('http'):
+                        link = f"https://www.vivareal.com.br{link}"
+
+                    imoveis.append(ImovelResult(
+                        titulo=titulo_el.get_text(strip=True) + " (VivaReal)",
+                        bairro=filtros.bairro or "Balneário Camboriú",
+                        preco=filtros.preco_max or 0.0,
+                        suites=filtros.suites_min or 0,
+                        vagas=filtros.vagas_min or 0,
+                        link=link
+                    ))
     except Exception as e:
-        print(f"Erro ao raspar Site 2: {e}")
-        
+        print(f"Erro no VivaReal: {e}")
+
     return imoveis
 
-# --- Raspador Site 3 (Ex: Portal Local C) ---
-async def raspar_site_3(client: httpx.AsyncClient, filtros: ImovelFiltros) -> List[ImovelResult]:
+
+# --- 3. RASPADOR CHAVES NA MÃO ---
+async def raspar_chaves_na_mao(client: httpx.AsyncClient, filtros: ImovelFiltros) -> List[ImovelResult]:
     imoveis = []
-    url_alvo = "https://www.exemplo-imobiliaria-bc-3.com.br/venda"
-    payload = {'api_key': SCRAPERAPI_KEY, 'url': url_alvo}
     
+    # URL de busca do Chaves na Mão
+    url_alvo = "https://www.chavesnamao.com.br/imoveis-a-venda/sc-balneario-camboriu/"
+
+    payload = {
+        'api_key': SCRAPERAPI_KEY,
+        'url': url_alvo,
+        'render': 'false'  # Pode ser false para economizar créditos e ser mais rápido
+    }
+
     try:
-        response = await client.get(SCRAPER_URL, params=payload, timeout=30.0)
+        response = await client.get(SCRAPER_URL, params=payload, timeout=35.0)
         if response.status_code == 200:
-            # Lógica de extração do HTML do Site 3
-            imoveis.append(ImovelResult(
-                titulo="Apartamento Frentemar - Fonte: Site 3",
-                bairro=filtros.bairro or "Pioneiros",
-                preco=filtros.preco_max or 4200000.0,
-                suites=filtros.suites_min or 3,
-                vagas=filtros.vagas_min or 2,
-                link="https://www.exemplo-imobiliaria-bc-3.com.br/imovel-3"
-            ))
+            soup = BeautifulSoup(response.text, 'html.parser')
+            cards = soup.select('div[data-template="card-imovel"]') or soup.select('article')
+
+            for card in cards[:5]:
+                titulo_el = card.select_one('h2') or card.select_one('h3')
+                link_el = card.select_one('a')
+
+                if titulo_el and link_el:
+                    link = link_el.get('href', '')
+                    if link and not link.startswith('http'):
+                        link = f"https://www.chavesnamao.com.br{link}"
+
+                    imoveis.append(ImovelResult(
+                        titulo=titulo_el.get_text(strip=True) + " (Chaves na Mão)",
+                        bairro=filtros.bairro or "Balneário Camboriú",
+                        preco=filtros.preco_max or 0.0,
+                        suites=filtros.suites_min or 0,
+                        vagas=filtros.vagas_min or 0,
+                        link=link
+                    ))
     except Exception as e:
-        print(f"Erro ao raspar Site 3: {e}")
-        
+        print(f"Erro no Chaves na Mão: {e}")
+
     return imoveis
 
-# --- Função Principal que executa as 3 raspagens simultaneamente ---
+
+# --- EXECUTOR PARALELO ---
 async def buscar_imoveis(filtros: ImovelFiltros) -> List[ImovelResult]:
     async with httpx.AsyncClient() as client:
-        # Dispara os 3 scrapers ao mesmo tempo
+        # Roda os 3 scrapers em paralelo usando asyncio.gather
         resultados = await asyncio.gather(
-            raspar_site_1(client, filtros),
-            raspar_site_2(client, filtros),
-            raspar_site_3(client, filtros)
+            raspar_zap_imoveis(client, filtros),
+            raspar_vivareal(client, filtros),
+            raspar_chaves_na_mao(client, filtros)
         )
-    
-    # Junta as 3 listas de resultados em uma só
+
+    # Junta os resultados dos 3 portais em uma lista única
     todos_imoveis = [imovel for sublista in resultados for imovel in sublista]
     return todos_imoveis
